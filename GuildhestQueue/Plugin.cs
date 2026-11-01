@@ -62,7 +62,7 @@ public sealed class Plugin : IDalamudPlugin
             options.Add(new(new(row.RowId, false), row.Content.RowId, row.Name.ToString(), row.ClassJobLevelRequired));
         }
         options.Sort((a, b) => a.Level != b.Level ? a.Level.CompareTo(b.Level) : a.Target.Id.CompareTo(b.Target.Id));
-        if (data.GetExcelSheet<ContentRoulette>().TryGetRow(4, out var roulette) && roulette.ContentType.RowId == 3)
+        if (data.GetExcelSheet<Lumina.Excel.Sheets.ContentRoulette>().TryGetRow(4, out var roulette) && roulette.ContentType.RowId == 3)
             options.Insert(0, new(new(4, true), 0, roulette.Name.ToString(), roulette.RequiredLevel));
         commands.AddHandler("/ghq", new CommandInfo(OnCommand) {
             HelpMessage = "公會令循環：/ghq 開啟設定，/ghq start 開始，/ghq stop 停止。"
@@ -151,7 +151,7 @@ public sealed class Plugin : IDalamudPlugin
         bool partyReady = !party.Any(p => dutyTerritories.Contains(p.Territory.RowId));
         string block = "";
         bool fatal = false;
-        var instance = InstanceContent.Instance();
+        var instance = FFXIVClientStructs.FFXIV.Client.Game.UI.InstanceContent.Instance();
         if (!inDuty && instance != null && instance->GetPenaltyRemainingInMinutes(0) > 0)
         { block = "目前有任務登記懲罰，請稍後重新開始。"; fatal = true; }
         else if (!inDuty && (finder->IsUnrestrictedParty || finder->IsExplorerMode))
@@ -168,7 +168,7 @@ public sealed class Plugin : IDalamudPlugin
         var queue = &finder->QueueInfo;
         var phase = (QueuePhase)(int)queue->QueueState;
         var popped = queue->PoppedQueueEntry;
-        uint poppedId = popped.ContentType == ContentsId.ContentsType.Regular ? popped.ConditionId : 0;
+        uint poppedId = popped.ContentType == ContentsType.Regular ? popped.Id : 0;
         var addon = gui.GetAddonByName<AddonContentsFinderConfirm>("ContentsFinderConfirm");
         bool canCommence = addon != null && addon->AtkUnitBase.IsVisible &&
             addon->CommenceButton != null && addon->CommenceButton->AtkComponentBase.OwnerNode != null &&
@@ -191,15 +191,15 @@ public sealed class Plugin : IDalamudPlugin
         int count = 0;
         foreach (var entry in queue->QueuedEntries)
         {
-            if (entry.ConditionId == 0) continue;
+            if (entry.Id == 0) continue;
             count++;
             if (target.Roulette)
             {
-                if (entry.ContentType == ContentsId.ContentsType.Roulette && entry.RouletteId == target.Id) continue;
-                if (entry.ContentType == ContentsId.ContentsType.Regular && guildhests.Contains(entry.ConditionId)) continue;
+                if (entry.ContentType == ContentsType.Roulette && entry.Id == target.Id) continue;
+                if (entry.ContentType == ContentsType.Regular && guildhests.Contains(entry.Id)) continue;
                 return false;
             }
-            if (entry.ContentType != ContentsId.ContentsType.Regular || entry.ConditionId != target.Id) return false;
+            if (entry.ContentType != ContentsType.Regular || entry.Id != target.Id) return false;
         }
         return target.Roulette ? queue->QueuedContentRouletteId == target.Id :
             count == 1 && queue->QueuedContentRouletteId == 0;
