@@ -1,0 +1,1 @@
+Guildhest Queue testing distribution. Install through https://raw.githubusercontent.com/WayneXXDD/DalamudPlugins/main/pluginmaster.json . Source: https://github.com/WayneXXDD/GuildhestQueue . Enable Get plugin testing builds in Dalamud settings.

@@ -1,0 +1,28 @@
+[
+  {
+    "Author": "WayneXXDD",
+    "Name": "Guildhest Queue (Wayne, Testing)",
+    "InternalName": "GuildhestQueue",
+    "AssemblyVersion": "0.1.0.0",
+    "DalamudApiLevel": 15,
+    "ApplicableVersion": "any",
+    "Punchline": "Repeat guildhests while you handle the combat.",
+    "Description": "Global client: select a guildhest or Guildhests roulette, automatically queue, confirm entry, and leave after completion before repeating. Combat remains manual. Standalone: no CBT, Yes Already, AutoDuty or other plugins required. Open /ghq.",
+    "RepoUrl": "https://github.com/WayneXXDD/GuildhestQueue",
+    "LoadSync": false,
+    "CanUnloadAsync": false,
+    "Tags": [
+      "guildhest",
+      "queue"
+    ],
+    "IsTestingExclusive": true,
+    "TestingAssemblyVersion": "0.1.0.0",
+    "TestingDalamudApiLevel": 15,
+    "Changelog": "0.1.0.0: Initial standalone guildhest queue loop with automatic entry, optional completion-only exit, run limits, and start/stop controls. Game behavior requires in-game testing.",
+    "IsHide": false,
+    "LastUpdate": 1793502706,
+    "DownloadLinkInstall": "https://raw.githubusercontent.com/WayneXXDD/GuildhestQueue/plugin-repo/plugins/GuildhestQueue/latest.zip",
+    "DownloadLinkUpdate": "https://raw.githubusercontent.com/WayneXXDD/GuildhestQueue/plugin-repo/plugins/GuildhestQueue/latest.zip",
+    "DownloadLinkTesting": "https://raw.githubusercontent.com/WayneXXDD/GuildhestQueue/plugin-repo/plugins/GuildhestQueue/latest.zip"
+  }
+]
