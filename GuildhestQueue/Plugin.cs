@@ -14,7 +14,6 @@ using FFXIVClientStructs.FFXIV.Client.UI.Agent;
 using FFXIVClientStructs.FFXIV.Component.GUI;
 using GuildhestQueue.Core;
 using Lumina.Excel.Sheets;
-using GuiValueType = FFXIVClientStructs.FFXIV.Component.GUI.ValueType;
 
 namespace GuildhestQueue;
 
@@ -230,7 +229,8 @@ public sealed class Plugin : IDalamudPlugin
                     throw new InvalidOperationException("Duty confirmation no longer matches this session.");
                 var addon = gui.GetAddonByName<AddonContentsFinderConfirm>("ContentsFinderConfirm");
                 if (addon == null) throw new InvalidOperationException("Duty confirmation is not available.");
-                var value = new AtkValue { Type = GuiValueType.Int, Int = 8 };
+                AtkValue value = default;
+                value.SetInt(8);
                 addon->AtkUnitBase.FireCallback(1, &value, true);
                 break;
             case LoopAction.Leave:
