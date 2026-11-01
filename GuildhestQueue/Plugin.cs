@@ -6,7 +6,9 @@ using Dalamud.Game.Command;
 using Dalamud.Game.DutyState;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Game.Event;
+using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.Game.Group;
 using FFXIVClientStructs.FFXIV.Client.Game.UI;
 using FFXIVClientStructs.FFXIV.Client.UI;
@@ -17,7 +19,7 @@ using Lumina.Excel.Sheets;
 
 namespace GuildhestQueue;
 
-public sealed class Plugin : IDalamudPlugin
+public sealed class Plugin : IDalamudPlugin, IAsyncDisposable
 {
     private sealed record DutyOption(DutyTarget Target, uint InstanceId, string Name, int Level);
     private readonly IDalamudPluginInterface pi;
@@ -33,6 +35,11 @@ public sealed class Plugin : IDalamudPlugin
     private readonly IPluginLog log;
     private readonly Configuration config;
     private readonly QueueLoop loop = new();
+    private readonly EntryForward forward = new();
+    private ForwardOptions forwardOptions = new();
+    private bool ownsAutoRun;
+    private ulong forwardOwner;
+    private double nextReleaseAttempt;
     private readonly List<DutyOption> options = [];
     private readonly HashSet<uint> guildhests = [];
     private readonly HashSet<uint> dutyTerritories = [];
@@ -100,10 +107,11 @@ public sealed class Plugin : IDalamudPlugin
         var request = Interlocked.Exchange(ref requested, 0);
         if (request == 2) { loop.Stop(); Interlocked.Exchange(ref completedDuty, 0); }
         var now = Now;
-        if (request == 0 && now < nextTick) return;
-        nextTick = now + 0.2;
         try
         {
+            UpdateForward(now);
+            if (request == 0 && now < nextTick) return;
+            nextTick = now + 0.2;
             var selected = loop.Running ? options.FirstOrDefault(o => o.Target == loop.Target) : Selected();
             last = Observe(selected);
             if (request == 1)
@@ -111,18 +119,24 @@ public sealed class Plugin : IDalamudPlugin
                 Interlocked.Exchange(ref completedDuty, 0);
                 selectionError = "";
                 if (selected == null) { selectionError = "請先選擇公會令。"; return; }
-                loop.Start(selected.Target, Settings(), last, now);
+                if (loop.Start(selected.Target, Settings(), last, now))
+                    forwardOptions = new ForwardOptions(config.ForwardOnEntry, config.ForwardDelaySeconds,
+                        config.ForwardDurationSeconds).Normalize();
             }
             var completed = Interlocked.Exchange(ref completedDuty, 0);
             if (completed != 0 && last.DutyId == (uint)completed)
                 loop.MarkCompleted(last, now);
             var action = loop.Step(last, now);
+            UpdateForward(now);
             if (action != LoopAction.None) Execute(action);
         }
         catch (Exception error)
         {
             log.Error(error, "Guildhest Queue stopped after an error.");
             loop.Stop("發生錯誤，循環已停止；請查看 Dalamud 記錄。");
+            forward.Cancel();
+            try { StopOwnedForward(now, true); }
+            catch (Exception cleanupError) { log.Error(cleanupError, "Could not release owned auto-run; retrying on the next frame."); }
             visible = true;
         }
     }
@@ -218,6 +232,8 @@ public sealed class Plugin : IDalamudPlugin
             case LoopAction.Register:
                 if (!state.CanQueue || state.InDuty || state.Queue != QueuePhase.None || !loop.Target.IsValid)
                     throw new InvalidOperationException("Registration conditions changed.");
+                if (ownsAutoRun) throw new InvalidOperationException("Previous forward movement has not stopped.");
+                forward.Arm(forwardOptions);
                 if (loop.Target.Roulette) finder->QueueInfo.QueueRoulette(checked((byte)loop.Target.Id));
                 else { uint id = loop.Target.Id; finder->QueueInfo.QueueDuties(&id, 1); }
                 log.Information("Guildhest Queue registered {Kind} {DutyId}.",
@@ -244,10 +260,74 @@ public sealed class Plugin : IDalamudPlugin
         }
     }
 
+    private unsafe void UpdateForward(double now)
+    {
+        // Run every framework frame, independently of the slower queue polling.
+        if (ownsAutoRun && !forward.Moving) StopOwnedForward(now);
+        if (forward.Phase is ForwardPhase.Disabled or ForwardPhase.Finished) return;
+        bool loaded = client.IsLoggedIn && player.IsLoaded && objects.LocalPlayer != null;
+        bool transition = condition[ConditionFlag.BetweenAreas] || condition[ConditionFlag.BetweenAreas51];
+        uint id = duties.ContentFinderCondition.RowId;
+        bool ownedDuty = loaded && loop.Phase == LoopPhase.InDuty &&
+            loop.Target?.Matches(id, guildhests.Contains(id)) == true &&
+            (condition[ConditionFlag.BoundByDuty] || condition[ConditionFlag.BoundByDuty56] || condition[ConditionFlag.BoundByDuty95]);
+        bool blocked = transition || condition[ConditionFlag.Unconscious] ||
+            condition[ConditionFlag.WaitingForDuty] || condition[ConditionFlag.Casting] || condition[ConditionFlag.Casting87] ||
+            condition[ConditionFlag.Occupied] || condition[ConditionFlag.Occupied30] ||
+            condition[ConditionFlag.OccupiedInEvent] || condition[ConditionFlag.OccupiedInQuestEvent] ||
+            condition[ConditionFlag.Occupied33] || condition[ConditionFlag.OccupiedInCutSceneEvent] ||
+            condition[ConditionFlag.Occupied38] || condition[ConditionFlag.Occupied39] ||
+            condition[ConditionFlag.WatchingCutscene] || condition[ConditionFlag.WatchingCutscene78] ||
+            condition[ConditionFlag.OccupiedSummoningBell];
+        bool inputReady = loaded && InputManager.Instance() != null && UIModule.Instance() != null;
+        bool autoRunning = inputReady && InputManager.IsAutoRunning();
+        bool active = !disposed && loop.Running && Volatile.Read(ref completedDuty) == 0 &&
+            loop.Phase is LoopPhase.Registering or LoopPhase.Queued or LoopPhase.Entering or LoopPhase.InDuty;
+        var observation = new ForwardObservation(active, ownedDuty, duties.IsDutyStarted,
+            ownedDuty && !blocked && inputReady && objects.LocalPlayer!.CurrentHp > 0,
+            condition[ConditionFlag.InCombat], autoRunning);
+        var action = forward.Step(observation, now);
+        if (action == ForwardAction.Start)
+        {
+            // Re-check ownership at the action boundary. Never take over pre-existing auto-run.
+            if (!observation.ControlReady || ownsAutoRun || InputManager.IsAutoRunning())
+            { forward.Cancel("已有移動操作，略過本次前進。"); return; }
+            forwardOwner = player.ContentId;
+            ownsAutoRun = true; // Set before dispatch so exceptions still take the cleanup path.
+            SetAutoRun(true);
+        }
+        else if (action == ForwardAction.Stop) StopOwnedForward(now, true);
+    }
+
+    private unsafe void StopOwnedForward(double now, bool force = false)
+    {
+        if (!ownsAutoRun) return;
+        if (!client.IsLoggedIn) { ownsAutoRun = false; return; }
+        if (player.IsLoaded && player.ContentId != 0 && player.ContentId != forwardOwner)
+        { ownsAutoRun = false; return; }
+        if (InputManager.Instance() == null || UIModule.Instance() == null) return;
+        if (!InputManager.IsAutoRunning()) { ownsAutoRun = false; return; }
+        if (!force && now < nextReleaseAttempt) return;
+        nextReleaseAttempt = now + 0.2;
+        SetAutoRun(false);
+        // Keep ownership until the game confirms release; retry if an occupied state rejected the command.
+        if (!InputManager.IsAutoRunning()) ownsAutoRun = false;
+    }
+
+    private static unsafe void SetAutoRun(bool enabled)
+    {
+        var module = UIModule.Instance();
+        if (module == null) throw new InvalidOperationException("The game UI is not available.");
+        var text = Utf8String.FromString(enabled ? "/automove on" : "/automove off");
+        if (text == null) throw new InvalidOperationException("Cannot create the auto-run command.");
+        try { module->ProcessChatBoxEntry(text); }
+        finally { text->Dtor(true); }
+    }
+
     private void Draw()
     {
         if (!visible || disposed) return;
-        ImGui.SetNextWindowSize(new Vector2(540, 440), ImGuiCond.FirstUseEver);
+        ImGui.SetNextWindowSize(new Vector2(560, 560), ImGuiCond.FirstUseEver);
         if (ImGui.Begin("公會令自動排隊 / Guildhest Queue", ref visible))
         {
             ImGui.TextWrapped("選擇公會令，按開始後自動排隊與確認進場。戰鬥由你操作。");
@@ -280,6 +360,16 @@ public sealed class Plugin : IDalamudPlugin
             }
             var repeat = config.RepeatDelaySeconds;
             if (ImGui.SliderInt("退場後再排間隔（秒）", ref repeat, 2, 60)) { config.RepeatDelaySeconds = repeat; Save(); }
+            var entryMove = config.ForwardOnEntry;
+            if (ImGui.Checkbox("進場可行動後往前走", ref entryMove)) { config.ForwardOnEntry = entryMove; Save(); }
+            if (config.ForwardOnEntry)
+            {
+                var delay = config.ForwardDelaySeconds;
+                if (ImGui.SliderFloat("可行動後等待（秒）", ref delay, 0f, 10f, "%.1f")) { config.ForwardDelaySeconds = delay; Save(); }
+                var duration = config.ForwardDurationSeconds;
+                if (ImGui.SliderFloat("前進時間（秒）", ref duration, 0.1f, 5f, "%.1f")) { config.ForwardDurationSeconds = duration; Save(); }
+                ImGui.TextWrapped("每次進場只前進一次；時間到、開始戰鬥、施法或停止循環時結束。");
+            }
             ImGui.EndDisabled();
             ImGui.Separator();
             if (!loop.Running)
@@ -290,6 +380,7 @@ public sealed class Plugin : IDalamudPlugin
             ImGui.SameLine();
             ImGui.TextUnformatted($"已完成：{loop.CompletedRuns} 次");
             ImGui.TextWrapped(selectionError.Length > 0 ? selectionError : loop.Status);
+            if (config.ForwardOnEntry) ImGui.TextWrapped(forward.Status);
             ImGui.TextWrapped("停止後不再自動操作；現有排隊可在遊戲內取消。");
             if (ImGui.CollapsingHeader("狀態資訊"))
             {
@@ -301,7 +392,9 @@ public sealed class Plugin : IDalamudPlugin
         ImGui.End();
     }
 
-    public void Dispose()
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
+
+    public async ValueTask DisposeAsync()
     {
         if (disposed) return;
         disposed = true;
@@ -312,5 +405,8 @@ public sealed class Plugin : IDalamudPlugin
         pi.UiBuilder.OpenConfigUi -= Open;
         pi.UiBuilder.OpenMainUi -= Open;
         commands.RemoveHandler("/ghq");
+        forward.Cancel();
+        try { await framework.RunOnFrameworkThread(() => StopOwnedForward(Now, true)); }
+        catch (Exception error) { log.Error(error, "Could not release auto-run while unloading Guildhest Queue."); }
     }
 }

@@ -151,6 +151,7 @@ static class Tests
         Assert(normalized.MaxRuns == 0 && normalized.ExitDelaySeconds == 60 && normalized.RepeatDelaySeconds == 2,
             "Clamp persisted settings");
 
-        Console.WriteLine($"PASS: {count} assertions covering guildhest queue lifecycle and action boundaries.");
+        count += ForwardTests.Run();
+        Console.WriteLine($"PASS: {count} assertions covering guildhest queue lifecycle, entry movement and action boundaries.");
     }
 }

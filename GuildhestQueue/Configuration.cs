@@ -6,6 +6,9 @@ namespace GuildhestQueue;
 public sealed class Configuration : IPluginConfiguration
 {
     public int Version { get; set; } = 1;
+    public bool ForwardOnEntry { get; set; }
+    public float ForwardDelaySeconds { get; set; } = 0.5f;
+    public float ForwardDurationSeconds { get; set; } = 1f;
     public uint DutyId { get; set; } = 4;
     public bool Roulette { get; set; } = true;
     public int MaxRuns { get; set; }
